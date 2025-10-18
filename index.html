@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <title>Signals</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+        margin: 20px;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 10px;
+      }
+      .meta {
+        color: #666;
+        font-size: 12px;
+        margin-bottom: 10px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        border: 1px solid #ddd;
+        padding: 8px;
+        font-size: 14px;
+      }
+      th {
+        background: #f7f7f7;
+        text-align: left;
+      }
+      .up {
+        color: #0a8f66;
+        font-weight: 600;
+      }
+      .dn {
+        color: #c0392b;
+        font-weight: 600;
+      }
+      .right {
+        text-align: right;
+      }
+      #msg {
+        margin: 10px 0;
+        color: #666;
+        font-size: 13px;
+      }
+      #controls {
+        margin: 8px 0 14px;
+      }
+      input,
+      select,
+      button {
+        font-size: 14px;
+        padding: 6px 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Signals</h1>
+    <div class="meta">
+      Last update: <span id="last">—</span> · Auto refresh:
+      <select id="interval">
+        <option value="0">Off</option>
+        <option value="10">10s</option>
+        <option value="30" selected>30s</option>
+        <option value="60">60s</option>
+      </select>
+      <button id="reload">Reload</button>
+    </div>
+
+    <div id="controls">
+      搜尋：<input id="q" placeholder="BTC / 起漲 / 暴跌…" />
+      類型：
+      <label><input type="checkbox" id="fUp" checked /> 起漲</label>
+      <label><input type="checkbox" id="fDn" checked /> 暴跌</label>
+      每幣只顯示最新一筆 <input type="checkbox" id="uniq" />
+    </div>
+
+    <div id="msg"></div>
+    <div id="wrap"></div>
+
+    <script>
+      const $ = (s) => document.querySelector(s);
+      const last = $("#last"),
+        wrap = $("#wrap"),
+        msg = $("#msg");
+      const q = $("#q"),
+        fUp = $("#fUp"),
+        fDn = $("#fDn"),
+        uniq = $("#uniq");
+      const intervalSel = $("#interval"),
+        reloadBtn = $("#reload");
+      let raw = [],
+        timer = null;
+
+      function fmt(n, d = 2) {
+        return n === null || n === undefined || n === "-" ? "-" : Number(n).toFixed(d);
+      }
+      function rel(iso) {
+        if (!iso) return "-";
+        const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+        if (s < 60) return s + "秒前";
+        const m = Math.floor(s / 60);
+        if (m < 60) return m + "分鐘前";
+        const h = Math.floor(m / 60);
+        if (h < 24) return h + "小時前";
+        return Math.floor(h / 24) + "天前";
+      }
+
+      function render() {
+        let arr = raw.slice();
+
+        // 類型篩選
+        arr = arr.filter((x) => {
+          const isUp = (x.type || "").includes("起漲");
+          const isDn = (x.type || "").includes("暴跌");
+          return (fUp.checked && isUp) || (fDn.checked && isDn);
+        });
+
+        // 搜尋
+        const key = (q.value || "").toLowerCase();
+        if (key) arr = arr.filter((x) => (x.symbol || "").toLowerCase().includes(key) || (x.type || "").toLowerCase().includes(key));
+
+        // 每幣只顯示最新
+        if (uniq.checked) {
+          const latest = new Map();
+          for (const it of arr) {
+            const prev = latest.get(it.symbol);
+            if (!prev || new Date(it.time) > new Date(prev.time)) latest.set(it.symbol, it);
+          }
+          arr = [...latest.values()];
+        }
+
+        // 依時間由新到舊
+        arr.sort((a, b) => new Date(b.time) - new Date(a.time));
+
+        if (!arr.length) {
+          wrap.innerHTML = "<p>目前沒有符合條件的訊號。</p>";
+          return;
+        }
+
+        const rows = arr
+          .map(
+            (r) => `
+        <tr>
+          <td>${rel(r.time)}</td>
+          <td><strong>${r.symbol || "-"}</strong></td>
+          <td class="${(r.type || "").includes("起漲") ? "up" : "dn"}">${r.type || "-"}</td>
+          <td class="right">${fmt(r.price, 4)}</td>
+          <td class="right">${fmt(r.volSurge, 2)}</td>
+          <td class="right" style="color:${Number(r.momentum15m) >= 0 ? "#0a8f66" : "#c0392b"}">${fmt(r.momentum15m, 2)}</td>
+          <td class="right">${r.fundingPct === "-" ? "-" : fmt(r.fundingPct, 3)}</td>
+          <td class="right" style="color:${Number(r.oiGrowthPct) >= 0 ? "#0a8f66" : "#c0392b"}">${fmt(r.oiGrowthPct, 2)}</td>
+        </tr>`
+          )
+          .join("");
+
+        wrap.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>時間</th><th>幣種</th><th>類型</th>
+              <th>價格</th><th>5m量倍數</th><th>15m動能%</th>
+              <th>Funding%</th><th>OI近4h增長%</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+      }
+
+      async function load() {
+        msg.textContent = "讀取中…";
+        try {
+          const res = await fetch("signals.json?ts=" + Date.now(), { cache: "no-store" });
+          raw = await res.json();
+          if (!Array.isArray(raw)) raw = [];
+          last.textContent = new Date().toLocaleString();
+          msg.textContent = "";
+          render();
+        } catch (e) {
+          msg.textContent = "讀取失敗：" + e.message;
+          raw = [];
+          render();
+        }
+      }
+
+      // 事件
+      q.oninput = render;
+      fUp.onchange = render;
+      fDn.onchange = render;
+      uniq.onchange = render;
+      reloadBtn.onclick = load;
+      intervalSel.onchange = () => {
+        if (timer) clearInterval(timer);
+        const s = parseInt(intervalSel.value, 10);
+        if (s > 0) timer = setInterval(load, s * 1000);
+      };
+
+      // 啟動
+      load().then(() => intervalSel.onchange());
+    </script>
+  </body>
+</html>
